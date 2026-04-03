@@ -16,8 +16,9 @@
 
 use crate::error::{SwapError, SwapResult};
 
-/// Default total fee basis points (lp_fee 25 + protocol_fee 5).
-pub const DEFAULT_FEE_BPS: u64 = 30;
+/// Default total fee basis points (lp_fee 20 + protocol_fee 5).
+/// Confirmed from live GlobalConfig on mainnet (2026-04-03).
+pub const DEFAULT_FEE_BPS: u64 = 25;
 
 // ─────────────────────────────────────────────
 // Core AMM formulas

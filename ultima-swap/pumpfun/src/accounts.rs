@@ -124,6 +124,9 @@ pub const GLOBAL_CONFIG_DISCRIMINATOR: [u8; 8] = [149, 8, 156, 202, 160, 252, 17
 
 impl GlobalConfig {
     /// Deserialize from raw account data (skips the 8-byte discriminator).
+    ///
+    /// Uses a reader so that extra trailing bytes (from newer program versions
+    /// that added fields) are silently ignored.
     pub fn try_from_slice(data: &[u8]) -> Result<Self, std::io::Error> {
         if data.len() < 8 {
             return Err(std::io::Error::new(
@@ -138,7 +141,9 @@ impl GlobalConfig {
                 "Invalid GlobalConfig discriminator",
             ));
         }
-        BorshDeserialize::try_from_slice(&data[8..])
+        // Use a reader to allow trailing bytes from newer program versions.
+        let mut cursor = std::io::Cursor::new(&data[8..]);
+        BorshDeserialize::deserialize_reader(&mut cursor)
     }
 
     /// Total fee in basis points (LP fee + protocol fee).
