@@ -79,6 +79,10 @@ pub struct BuyParams {
     /// Which protocol-fee recipient to use (index 0–7 into
     /// [`PROTOCOL_FEE_RECIPIENTS`]).  Callers can rotate this for throughput.
     pub fee_recipient_index: usize,
+    /// Token program that owns the graduated (quote) mint.
+    /// Determine at runtime via `getAccountInfo` on the mint.
+    /// Use [`TOKEN_PROGRAM`] for legacy SPL tokens, [`TOKEN_2022_PROGRAM`] for Token Extensions.
+    pub quote_token_program: Pubkey,
 }
 
 /// Parameters for a PumpSwap **sell** (spend base, receive quote/SOL).
@@ -96,6 +100,8 @@ pub struct SellParams {
     pub min_quote_amount_out: u64,
     /// Protocol-fee recipient index (0–7).
     pub fee_recipient_index: usize,
+    /// Token program that owns the graduated (quote) mint.
+    pub quote_token_program: Pubkey,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,13 +136,14 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
     data.serialize(&mut ix_data)
         .map_err(|e| SwapError::Deserialization(e.into()))?;
 
-    // Graduated base mints use Token-2022; quote (WSOL) uses old SPL Token.
+    // PumpSwap naming: base_mint = WSOL (always TOKEN_PROGRAM),
+    // quote_mint = graduated token (TOKEN_PROGRAM or TOKEN_2022 depending on mint).
     let user_base_ata =
-        get_associated_token_address_with_program(&params.user, &params.pool_data.base_mint, &TOKEN_2022_PROGRAM);
+        get_associated_token_address(&params.user, &params.pool_data.base_mint); // WSOL → TOKEN_PROGRAM
     let user_quote_ata =
-        get_associated_token_address(&params.user, &params.pool_data.quote_mint);
+        get_associated_token_address_with_program(&params.user, &params.pool_data.quote_mint, &params.quote_token_program);
     let fee_recipient_quote_ata =
-        get_associated_token_address(&fee_recipient, &params.pool_data.quote_mint);
+        get_associated_token_address_with_program(&fee_recipient, &params.pool_data.quote_mint, &params.quote_token_program);
 
     // Account ordering matches the PumpSwap IDL buy instruction.
     let accounts = vec![
@@ -183,13 +190,14 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
     data.serialize(&mut ix_data)
         .map_err(|e| SwapError::Deserialization(e.into()))?;
 
-    // Graduated base mints use Token-2022; quote (WSOL) uses old SPL Token.
+    // PumpSwap naming: base_mint = WSOL (always TOKEN_PROGRAM),
+    // quote_mint = graduated token (runtime-determined token program).
     let user_base_ata =
-        get_associated_token_address_with_program(&params.user, &params.pool_data.base_mint, &TOKEN_2022_PROGRAM);
+        get_associated_token_address(&params.user, &params.pool_data.base_mint); // WSOL → TOKEN_PROGRAM
     let user_quote_ata =
-        get_associated_token_address(&params.user, &params.pool_data.quote_mint);
+        get_associated_token_address_with_program(&params.user, &params.pool_data.quote_mint, &params.quote_token_program);
     let fee_recipient_quote_ata =
-        get_associated_token_address(&fee_recipient, &params.pool_data.quote_mint);
+        get_associated_token_address_with_program(&fee_recipient, &params.pool_data.quote_mint, &params.quote_token_program);
 
     let accounts = vec![
         AccountMeta::new(params.pool, false),                   // 0  pool
@@ -228,9 +236,19 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
 /// Create an ATA for a base mint.  Pump.fun graduated tokens use Token-2022,
 /// so we must pass the correct token program.  `token_program` should be
 /// [`TOKEN_2022_PROGRAM`] for graduated base mints and [`TOKEN_PROGRAM`] for WSOL.
+/// Create an ATA for the graduated token (PumpSwap's quote mint).
+///
+/// `token_program` must match the graduated token's owner program
+/// (TOKEN_PROGRAM for legacy SPL tokens, TOKEN_2022_PROGRAM for Token Extensions).
+/// Determine this at runtime by inspecting the mint account's `owner` field.
+pub fn create_quote_ata_if_needed(user: &Pubkey, quote_mint: &Pubkey, token_program: &Pubkey) -> Instruction {
+    create_ata_if_needed(user, quote_mint, token_program)
+}
+
+/// Backwards-compat alias. Prefer [`create_quote_ata_if_needed`].
 pub fn create_base_ata_if_needed(user: &Pubkey, base_mint: &Pubkey) -> Instruction {
-    // Graduated pump.fun tokens are Token-2022; use TOKEN_2022_PROGRAM.
-    create_ata_if_needed(user, base_mint, &TOKEN_2022_PROGRAM)
+    // Legacy: assumes TOKEN_PROGRAM. Callers should migrate to create_quote_ata_if_needed.
+    create_ata_if_needed(user, base_mint, &TOKEN_PROGRAM)
 }
 
 /// Create an ATA for any mint with an explicit token program.
@@ -279,19 +297,24 @@ pub struct CreatePoolDetected {
 ///
 /// # Account ordering for create_pool
 ///
-/// Verified against on-chain transactions (2026-04-03):
+/// Verified against on-chain create_pool transactions (2026-04-03):
 ///
 /// ```text
 /// 0  pool              (new pool address)
 /// 1  creator           (payer / signer)
 /// 2  global_config
-/// 3  quote_mint        (WSOL)
-/// 4  lp_mint
-/// 5  base_mint         (graduated token)
-/// 6  pool_base_vault
-/// 7  pool_quote_vault
+/// 3  base_mint         (WSOL — PumpSwap calls WSOL "base")
+/// 4  quote_mint        (graduated token — PumpSwap calls this "quote")
+/// 5  lp_mint
+/// 6  pool_base_vault   (WSOL vault)
+/// 7  pool_quote_vault  (graduated token vault)
 /// ...
 /// ```
+///
+/// **IMPORTANT:** PumpSwap's naming is inverted from the usual convention.
+/// On-chain Pool struct has `base_mint = WSOL` and `quote_mint = graduated`.
+/// The `base_mint` field in [`CreatePoolDetected`] returns the **graduated
+/// token** (index 4) for downstream convenience — the thing we want to trade.
 pub fn try_parse_create_pool(
     ix_data: &[u8],
     account_keys: &[Pubkey],
@@ -306,11 +329,13 @@ pub fn try_parse_create_pool(
     if account_keys.len() < 6 {
         return None;
     }
+    // Return graduated token as "base_mint" for downstream (it's actually
+    // PumpSwap's quote_mint at index 4).
     Some(CreatePoolDetected {
         pool: account_keys[0],
         creator: account_keys[1],
-        base_mint: account_keys[5],
-        quote_mint: account_keys[3],
+        base_mint: account_keys[4],  // graduated token (PumpSwap's quote_mint)
+        quote_mint: account_keys[3], // WSOL (PumpSwap's base_mint)
     })
 }
 
