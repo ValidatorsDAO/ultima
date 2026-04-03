@@ -160,8 +160,8 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
         AccountMeta::new(fee_recipient_quote_ata, false),       // 10 protocol_fee_recipient_token_account
         AccountMeta::new_readonly(TOKEN_PROGRAM, false),        // 11 token_program
         AccountMeta::new_readonly(TOKEN_2022_PROGRAM, false),   // 12 token_2022_program
-        AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM, false), // 13 associated_token_program
-        AccountMeta::new_readonly(SYSTEM_PROGRAM, false),       // 14 system_program
+        AccountMeta::new_readonly(SYSTEM_PROGRAM, false),       // 13 system_program
+        AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM, false), // 14 associated_token_program
         AccountMeta::new_readonly(event_authority, false),      // 15 event_authority
         AccountMeta::new_readonly(PUMP_AMM_PROGRAM_ID, false),  // 16 program (self-CPI)
     ];
@@ -213,8 +213,8 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
         AccountMeta::new(fee_recipient_quote_ata, false),       // 10 protocol_fee_recipient_token_account
         AccountMeta::new_readonly(TOKEN_PROGRAM, false),        // 11 token_program
         AccountMeta::new_readonly(TOKEN_2022_PROGRAM, false),   // 12 token_2022_program
-        AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM, false), // 13 associated_token_program
-        AccountMeta::new_readonly(SYSTEM_PROGRAM, false),       // 14 system_program
+        AccountMeta::new_readonly(SYSTEM_PROGRAM, false),       // 13 system_program
+        AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM, false), // 14 associated_token_program
         AccountMeta::new_readonly(event_authority, false),      // 15 event_authority
         AccountMeta::new_readonly(PUMP_AMM_PROGRAM_ID, false),  // 16 program (self-CPI)
     ];
