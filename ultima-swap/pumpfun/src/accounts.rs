@@ -34,6 +34,7 @@ pub struct Pool {
     pub pool_quote_token_account: Pubkey,
     pub lp_supply: u64,
     pub is_mayhem_mode: bool,
+    pub coin_creator: Pubkey,
 }
 
 /// Anchor account discriminator for Pool (sha256("account:Pool")[..8]).

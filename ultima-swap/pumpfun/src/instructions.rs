@@ -19,7 +19,7 @@
 //!
 //! # Account ordering
 //!
-//! Both `buy` and `sell` use the same 17-account layout derived from the
+//! Both `buy` and `sell` use the same 23-account layout derived from the
 //! PumpSwap IDL.  If the program is upgraded and the ordering changes, update
 //! the `account_metas` vectors in [`build_buy`] and [`build_sell`].
 
@@ -46,6 +46,8 @@ struct BuyInstructionData {
     base_amount_out: u64,
     /// Maximum lamports the user is willing to spend (slippage guard).
     max_quote_amount_in: u64,
+    /// Whether to track volume (0 = None/false).
+    track_volume: u8,
 }
 
 /// On-wire data for the `sell` instruction.
@@ -57,6 +59,8 @@ struct SellInstructionData {
     base_amount_in: u64,
     /// Minimum lamports the user requires to receive (slippage guard).
     min_quote_amount_out: u64,
+    /// Whether to track volume (0 = None/false).
+    track_volume: u8,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -131,8 +135,9 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
         discriminator: BUY_DISCRIMINATOR,
         base_amount_out: params.base_amount_out,
         max_quote_amount_in: params.max_quote_amount_in,
+        track_volume: 0,
     };
-    let mut ix_data = Vec::with_capacity(24);
+    let mut ix_data = Vec::with_capacity(25);
     data.serialize(&mut ix_data)
         .map_err(|e| SwapError::Deserialization(e.into()))?;
 
@@ -145,7 +150,30 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
     let fee_recipient_quote_ata =
         get_associated_token_address_with_program(&fee_recipient, &params.pool_data.quote_mint, &params.quote_token_program);
 
-    // Account ordering matches the PumpSwap IDL buy instruction.
+    // Derive new PDAs for v2 accounts
+    let (coin_creator_vault_authority, _) = Pubkey::find_program_address(
+        &[b"creator_vault", params.pool_data.coin_creator.as_ref()],
+        &PUMP_AMM_PROGRAM_ID,
+    );
+    let coin_creator_vault_ata = get_associated_token_address_with_program(
+        &coin_creator_vault_authority,
+        &params.pool_data.quote_mint,
+        &params.quote_token_program,
+    );
+    let (global_volume_accumulator, _) = Pubkey::find_program_address(
+        &[b"global_volume_accumulator"],
+        &PUMP_AMM_PROGRAM_ID,
+    );
+    let (user_volume_accumulator, _) = Pubkey::find_program_address(
+        &[b"user_volume_accumulator", params.user.as_ref()],
+        &PUMP_AMM_PROGRAM_ID,
+    );
+    let (fee_config, _) = Pubkey::find_program_address(
+        &[b"fee_config", PUMP_AMM_PROGRAM_ID.as_ref()],
+        &FEE_PROGRAM,
+    );
+
+    // Account ordering matches the PumpSwap IDL buy instruction (23 accounts).
     let accounts = vec![
         AccountMeta::new(params.pool, false),                   // 0  pool
         AccountMeta::new(params.user, true),                    // 1  user (signer)
@@ -158,12 +186,18 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
         AccountMeta::new(params.pool_data.pool_quote_token_account, false), // 8  pool_quote_token_account
         AccountMeta::new(fee_recipient, false),                 // 9  protocol_fee_recipient
         AccountMeta::new(fee_recipient_quote_ata, false),       // 10 protocol_fee_recipient_token_account
-        AccountMeta::new_readonly(TOKEN_PROGRAM, false),        // 11 token_program
-        AccountMeta::new_readonly(TOKEN_2022_PROGRAM, false),   // 12 token_2022_program
+        AccountMeta::new_readonly(TOKEN_PROGRAM, false),        // 11 base_token_program
+        AccountMeta::new_readonly(params.quote_token_program, false), // 12 quote_token_program
         AccountMeta::new_readonly(SYSTEM_PROGRAM, false),       // 13 system_program
         AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM, false), // 14 associated_token_program
         AccountMeta::new_readonly(event_authority, false),      // 15 event_authority
         AccountMeta::new_readonly(PUMP_AMM_PROGRAM_ID, false),  // 16 program (self-CPI)
+        AccountMeta::new(coin_creator_vault_ata, false),        // 17 coin_creator_vault_ata
+        AccountMeta::new_readonly(coin_creator_vault_authority, false), // 18 coin_creator_vault_authority
+        AccountMeta::new_readonly(global_volume_accumulator, false), // 19 global_volume_accumulator
+        AccountMeta::new(user_volume_accumulator, false),       // 20 user_volume_accumulator
+        AccountMeta::new_readonly(fee_config, false),           // 21 fee_config
+        AccountMeta::new_readonly(FEE_PROGRAM, false),          // 22 fee_program
     ];
 
     Ok(Instruction {
@@ -185,8 +219,9 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
         discriminator: SELL_DISCRIMINATOR,
         base_amount_in: params.base_amount_in,
         min_quote_amount_out: params.min_quote_amount_out,
+        track_volume: 0,
     };
-    let mut ix_data = Vec::with_capacity(24);
+    let mut ix_data = Vec::with_capacity(25);
     data.serialize(&mut ix_data)
         .map_err(|e| SwapError::Deserialization(e.into()))?;
 
@@ -198,6 +233,29 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
         get_associated_token_address_with_program(&params.user, &params.pool_data.quote_mint, &params.quote_token_program);
     let fee_recipient_quote_ata =
         get_associated_token_address_with_program(&fee_recipient, &params.pool_data.quote_mint, &params.quote_token_program);
+
+    // Derive new PDAs for v2 accounts
+    let (coin_creator_vault_authority, _) = Pubkey::find_program_address(
+        &[b"creator_vault", params.pool_data.coin_creator.as_ref()],
+        &PUMP_AMM_PROGRAM_ID,
+    );
+    let coin_creator_vault_ata = get_associated_token_address_with_program(
+        &coin_creator_vault_authority,
+        &params.pool_data.quote_mint,
+        &params.quote_token_program,
+    );
+    let (global_volume_accumulator, _) = Pubkey::find_program_address(
+        &[b"global_volume_accumulator"],
+        &PUMP_AMM_PROGRAM_ID,
+    );
+    let (user_volume_accumulator, _) = Pubkey::find_program_address(
+        &[b"user_volume_accumulator", params.user.as_ref()],
+        &PUMP_AMM_PROGRAM_ID,
+    );
+    let (fee_config, _) = Pubkey::find_program_address(
+        &[b"fee_config", PUMP_AMM_PROGRAM_ID.as_ref()],
+        &FEE_PROGRAM,
+    );
 
     let accounts = vec![
         AccountMeta::new(params.pool, false),                   // 0  pool
@@ -211,12 +269,18 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
         AccountMeta::new(params.pool_data.pool_quote_token_account, false), // 8  pool_quote_token_account
         AccountMeta::new(fee_recipient, false),                 // 9  protocol_fee_recipient
         AccountMeta::new(fee_recipient_quote_ata, false),       // 10 protocol_fee_recipient_token_account
-        AccountMeta::new_readonly(TOKEN_PROGRAM, false),        // 11 token_program
-        AccountMeta::new_readonly(TOKEN_2022_PROGRAM, false),   // 12 token_2022_program
+        AccountMeta::new_readonly(TOKEN_PROGRAM, false),        // 11 base_token_program
+        AccountMeta::new_readonly(params.quote_token_program, false), // 12 quote_token_program
         AccountMeta::new_readonly(SYSTEM_PROGRAM, false),       // 13 system_program
         AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM, false), // 14 associated_token_program
         AccountMeta::new_readonly(event_authority, false),      // 15 event_authority
         AccountMeta::new_readonly(PUMP_AMM_PROGRAM_ID, false),  // 16 program (self-CPI)
+        AccountMeta::new(coin_creator_vault_ata, false),        // 17 coin_creator_vault_ata
+        AccountMeta::new_readonly(coin_creator_vault_authority, false), // 18 coin_creator_vault_authority
+        AccountMeta::new_readonly(global_volume_accumulator, false), // 19 global_volume_accumulator
+        AccountMeta::new(user_volume_accumulator, false),       // 20 user_volume_accumulator
+        AccountMeta::new_readonly(fee_config, false),           // 21 fee_config
+        AccountMeta::new_readonly(FEE_PROGRAM, false),          // 22 fee_program
     ];
 
     Ok(Instruction {
