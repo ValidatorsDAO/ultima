@@ -59,8 +59,6 @@ struct SellInstructionData {
     base_amount_in: u64,
     /// Minimum lamports the user requires to receive (slippage guard).
     min_quote_amount_out: u64,
-    /// Whether to track volume (0 = None/false).
-    track_volume: u8,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -219,9 +217,8 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
         discriminator: SELL_DISCRIMINATOR,
         base_amount_in: params.base_amount_in,
         min_quote_amount_out: params.min_quote_amount_out,
-        track_volume: 0,
     };
-    let mut ix_data = Vec::with_capacity(25);
+    let mut ix_data = Vec::with_capacity(24);
     data.serialize(&mut ix_data)
         .map_err(|e| SwapError::Deserialization(e.into()))?;
 
@@ -234,7 +231,7 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
     let fee_recipient_quote_ata =
         get_associated_token_address_with_program(&fee_recipient, &params.pool_data.quote_mint, &params.quote_token_program);
 
-    // Derive new PDAs for v2 accounts
+    // Derive PDAs for sell v2 accounts (21 total — no volume accumulators)
     let (coin_creator_vault_authority, _) = Pubkey::find_program_address(
         &[b"creator_vault", params.pool_data.coin_creator.as_ref()],
         &PUMP_AMM_PROGRAM_ID,
@@ -244,19 +241,12 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
         &params.pool_data.quote_mint,
         &params.quote_token_program,
     );
-    let (global_volume_accumulator, _) = Pubkey::find_program_address(
-        &[b"global_volume_accumulator"],
-        &PUMP_AMM_PROGRAM_ID,
-    );
-    let (user_volume_accumulator, _) = Pubkey::find_program_address(
-        &[b"user_volume_accumulator", params.user.as_ref()],
-        &PUMP_AMM_PROGRAM_ID,
-    );
     let (fee_config, _) = Pubkey::find_program_address(
         &[b"fee_config", PUMP_AMM_PROGRAM_ID.as_ref()],
         &FEE_PROGRAM,
     );
 
+    // Sell: 21 accounts (no global/user volume accumulators unlike buy's 23)
     let accounts = vec![
         AccountMeta::new(params.pool, false),                   // 0  pool
         AccountMeta::new(params.user, true),                    // 1  user (signer)
@@ -277,10 +267,8 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
         AccountMeta::new_readonly(PUMP_AMM_PROGRAM_ID, false),  // 16 program (self-CPI)
         AccountMeta::new(coin_creator_vault_ata, false),        // 17 coin_creator_vault_ata
         AccountMeta::new_readonly(coin_creator_vault_authority, false), // 18 coin_creator_vault_authority
-        AccountMeta::new_readonly(global_volume_accumulator, false), // 19 global_volume_accumulator
-        AccountMeta::new(user_volume_accumulator, false),       // 20 user_volume_accumulator
-        AccountMeta::new_readonly(fee_config, false),           // 21 fee_config
-        AccountMeta::new_readonly(FEE_PROGRAM, false),          // 22 fee_program
+        AccountMeta::new_readonly(fee_config, false),           // 19 fee_config
+        AccountMeta::new_readonly(FEE_PROGRAM, false),          // 20 fee_program
     ];
 
     Ok(Instruction {
