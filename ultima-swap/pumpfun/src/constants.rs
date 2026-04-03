@@ -41,6 +41,10 @@ pub const PROTOCOL_FEE_RECIPIENTS: [Pubkey; 8] = [
     solana_pubkey::pubkey!("JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU"),
 ];
 
+/// Fee program
+pub const FEE_PROGRAM: Pubkey =
+    solana_pubkey::pubkey!("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
+
 // ── Anchor instruction discriminators (first 8 bytes of SHA256("global:<name>")) ──
 
 /// buy discriminator
