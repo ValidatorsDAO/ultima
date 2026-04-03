@@ -268,16 +268,19 @@ pub struct CreatePoolDetected {
 ///
 /// # Account ordering for create_pool
 ///
+/// Verified against on-chain transactions (2026-04-03):
+///
 /// ```text
-/// 0  pool          (new pool address)
-/// 1  global_config
-/// 2  creator       (signer)
-/// 3  base_mint
-/// 4  quote_mint
+/// 0  pool              (new pool address)
+/// 1  creator           (payer / signer)
+/// 2  global_config
+/// 3  quote_mint        (WSOL)
+/// 4  lp_mint
+/// 5  base_mint         (graduated token)
+/// 6  pool_base_vault
+/// 7  pool_quote_vault
 /// ...
 /// ```
-///
-/// TODO: Confirm the exact account layout against the deployed IDL.
 pub fn try_parse_create_pool(
     ix_data: &[u8],
     account_keys: &[Pubkey],
@@ -289,14 +292,14 @@ pub fn try_parse_create_pool(
     if disc != CREATE_POOL_DISCRIMINATOR {
         return None;
     }
-    if account_keys.len() < 5 {
+    if account_keys.len() < 6 {
         return None;
     }
     Some(CreatePoolDetected {
         pool: account_keys[0],
-        creator: account_keys[2],
-        base_mint: account_keys[3],
-        quote_mint: account_keys[4],
+        creator: account_keys[1],
+        base_mint: account_keys[5],
+        quote_mint: account_keys[3],
     })
 }
 
