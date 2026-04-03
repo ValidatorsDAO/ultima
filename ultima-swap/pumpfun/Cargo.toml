@@ -1,0 +1,21 @@
+[package]
+name = "ultima-swap-pumpfun"
+description = "PumpSwap AMM SDK — buy/sell on Pump.fun graduated pools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+solana-sdk = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-program = { workspace = true }
+solana-rpc-client = { workspace = true }
+spl-token = { workspace = true }
+spl-token-2022 = { workspace = true }
+spl-associated-token-account = { workspace = true }
+borsh = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
