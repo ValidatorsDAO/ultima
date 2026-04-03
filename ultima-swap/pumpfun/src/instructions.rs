@@ -130,8 +130,9 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
     data.serialize(&mut ix_data)
         .map_err(|e| SwapError::Deserialization(e.into()))?;
 
+    // Graduated base mints use Token-2022; quote (WSOL) uses old SPL Token.
     let user_base_ata =
-        get_associated_token_address(&params.user, &params.pool_data.base_mint);
+        get_associated_token_address_with_program(&params.user, &params.pool_data.base_mint, &TOKEN_2022_PROGRAM);
     let user_quote_ata =
         get_associated_token_address(&params.user, &params.pool_data.quote_mint);
     let fee_recipient_quote_ata =
@@ -182,8 +183,9 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
     data.serialize(&mut ix_data)
         .map_err(|e| SwapError::Deserialization(e.into()))?;
 
+    // Graduated base mints use Token-2022; quote (WSOL) uses old SPL Token.
     let user_base_ata =
-        get_associated_token_address(&params.user, &params.pool_data.base_mint);
+        get_associated_token_address_with_program(&params.user, &params.pool_data.base_mint, &TOKEN_2022_PROGRAM);
     let user_quote_ata =
         get_associated_token_address(&params.user, &params.pool_data.quote_mint);
     let fee_recipient_quote_ata =
@@ -223,17 +225,26 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
 /// Build an idempotent ATA-creation instruction for the base mint.
 ///
 /// Uses instruction index 1 of the ATA program (CreateIdempotent).
+/// Create an ATA for a base mint.  Pump.fun graduated tokens use Token-2022,
+/// so we must pass the correct token program.  `token_program` should be
+/// [`TOKEN_2022_PROGRAM`] for graduated base mints and [`TOKEN_PROGRAM`] for WSOL.
 pub fn create_base_ata_if_needed(user: &Pubkey, base_mint: &Pubkey) -> Instruction {
-    let ata = get_associated_token_address(user, base_mint);
+    // Graduated pump.fun tokens are Token-2022; use TOKEN_2022_PROGRAM.
+    create_ata_if_needed(user, base_mint, &TOKEN_2022_PROGRAM)
+}
+
+/// Create an ATA for any mint with an explicit token program.
+pub fn create_ata_if_needed(user: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Instruction {
+    let ata = get_associated_token_address_with_program(user, mint, token_program);
     Instruction {
         program_id: ASSOCIATED_TOKEN_PROGRAM,
         accounts: vec![
             AccountMeta::new(*user, true),                     // payer
             AccountMeta::new(ata, false),                      // associated token account
             AccountMeta::new_readonly(*user, false),           // wallet
-            AccountMeta::new_readonly(*base_mint, false),      // mint
+            AccountMeta::new_readonly(*mint, false),           // mint
             AccountMeta::new_readonly(SYSTEM_PROGRAM, false),  // system program
-            AccountMeta::new_readonly(TOKEN_PROGRAM, false),   // token program
+            AccountMeta::new_readonly(*token_program, false),  // token program
         ],
         data: vec![1], // CreateIdempotent instruction discriminator
     }
