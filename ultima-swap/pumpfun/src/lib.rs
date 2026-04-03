@@ -65,8 +65,8 @@ pub use solana_instruction::Instruction;
 pub use constants::*;
 pub use error::{SwapError, SwapResult};
 pub use instructions::{
-    build_buy, build_sell, create_base_ata_if_needed, try_parse_create_pool, BuyParams,
-    CreatePoolDetected, SellParams,
+    build_buy, build_sell, create_base_ata_if_needed, try_parse_create_pool, try_parse_swap,
+    BuyParams, CreatePoolDetected, SellParams, SwapDetected, SwapDirection,
 };
 pub use math::{
     base_out_for_exact_quote_in, price_impact_bps_buy, quote_in_for_exact_base_out,

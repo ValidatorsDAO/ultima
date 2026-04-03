@@ -301,6 +301,82 @@ pub fn try_parse_create_pool(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// swap (buy/sell) detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Direction of a detected swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapDirection {
+    Buy,
+    Sell,
+}
+
+/// Parsed representation of a buy or sell instruction found in a transaction.
+#[derive(Debug, Clone)]
+pub struct SwapDetected {
+    pub direction: SwapDirection,
+    /// Pool address (account key at index 0).
+    pub pool: Pubkey,
+    /// User/signer (account key at index 1).
+    pub user: Pubkey,
+    /// Base mint (account key at index 2).
+    pub base_mint: Pubkey,
+    /// For buy: base_amount_out (tokens received).
+    /// For sell: base_amount_in (tokens sold).
+    pub base_amount: u64,
+    /// For buy: max_quote_amount_in (max SOL spent).
+    /// For sell: min_quote_amount_out (min SOL received).
+    pub quote_amount: u64,
+}
+
+/// Attempt to parse a buy or sell instruction from raw instruction bytes
+/// and resolved account keys.
+///
+/// Returns `None` if the discriminator doesn't match buy or sell, or if
+/// there are too few accounts/bytes.
+///
+/// # Buy account layout
+/// ```text
+/// 0  pool
+/// 1  user (signer)
+/// 2  base_mint
+/// ...
+/// ```
+///
+/// # Instruction data layout (both buy & sell)
+/// ```text
+/// [0..8]   discriminator
+/// [8..16]  amount_1 (u64 LE) — buy: base_amount_out, sell: base_amount_in
+/// [16..24] amount_2 (u64 LE) — buy: max_quote_in, sell: min_quote_out
+/// ```
+pub fn try_parse_swap(
+    ix_data: &[u8],
+    account_keys: &[Pubkey],
+) -> Option<SwapDetected> {
+    if ix_data.len() < 24 || account_keys.len() < 3 {
+        return None;
+    }
+    let disc: [u8; 8] = ix_data[..8].try_into().ok()?;
+    let direction = if disc == BUY_DISCRIMINATOR {
+        SwapDirection::Buy
+    } else if disc == SELL_DISCRIMINATOR {
+        SwapDirection::Sell
+    } else {
+        return None;
+    };
+    let base_amount = u64::from_le_bytes(ix_data[8..16].try_into().ok()?);
+    let quote_amount = u64::from_le_bytes(ix_data[16..24].try_into().ok()?);
+    Some(SwapDetected {
+        direction,
+        pool: account_keys[0],
+        user: account_keys[1],
+        base_mint: account_keys[2],
+        quote_amount,
+        base_amount,
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
