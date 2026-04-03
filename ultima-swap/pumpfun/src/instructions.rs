@@ -25,9 +25,7 @@
 
 use borsh::BorshSerialize;
 use solana_pubkey::Pubkey;
-use solana_sdk::instruction::{AccountMeta, Instruction};
-use spl_associated_token_account::get_associated_token_address;
-use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
+use solana_instruction::{AccountMeta, Instruction};
 
 use crate::{
     accounts::{derive_event_authority, Pool},
@@ -222,13 +220,23 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
 ///
 /// Include this before the buy instruction when the user's base ATA may not
 /// exist (e.g., first purchase of this token).
+/// Build an idempotent ATA-creation instruction for the base mint.
+///
+/// Uses instruction index 1 of the ATA program (CreateIdempotent).
 pub fn create_base_ata_if_needed(user: &Pubkey, base_mint: &Pubkey) -> Instruction {
-    create_associated_token_account_idempotent(
-        user,       // payer
-        user,       // wallet
-        base_mint,
-        &TOKEN_PROGRAM,
-    )
+    let ata = get_associated_token_address(user, base_mint);
+    Instruction {
+        program_id: ASSOCIATED_TOKEN_PROGRAM,
+        accounts: vec![
+            AccountMeta::new(*user, true),                     // payer
+            AccountMeta::new(ata, false),                      // associated token account
+            AccountMeta::new_readonly(*user, false),           // wallet
+            AccountMeta::new_readonly(*base_mint, false),      // mint
+            AccountMeta::new_readonly(SYSTEM_PROGRAM, false),  // system program
+            AccountMeta::new_readonly(TOKEN_PROGRAM, false),   // token program
+        ],
+        data: vec![1], // CreateIdempotent instruction discriminator
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -301,4 +309,21 @@ fn fee_recipient(index: usize) -> SwapResult<Pubkey> {
         .get(index)
         .copied()
         .ok_or_else(|| SwapError::MathOverflow) // reuse closest error; index OOB
+}
+
+/// Derive the Associated Token Account (ATA) address.
+/// This is the standard ATA derivation: PDA of [wallet, TOKEN_PROGRAM, mint] under the ATA program.
+fn get_associated_token_address(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
+    get_associated_token_address_with_program(wallet, mint, &TOKEN_PROGRAM)
+}
+
+fn get_associated_token_address_with_program(wallet: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            wallet.as_ref(),
+            token_program.as_ref(),
+            mint.as_ref(),
+        ],
+        &ASSOCIATED_TOKEN_PROGRAM,
+    ).0
 }

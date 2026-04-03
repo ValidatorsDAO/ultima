@@ -61,6 +61,7 @@ pub mod math;
 
 // Flat re-exports for ergonomic use.
 pub use accounts::{derive_event_authority, derive_global_config, GlobalConfig, Pool};
+pub use solana_instruction::Instruction;
 pub use constants::*;
 pub use error::{SwapError, SwapResult};
 pub use instructions::{
