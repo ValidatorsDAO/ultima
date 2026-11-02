@@ -22,6 +22,12 @@
 //! Both `buy` and `sell` use the same 23-account layout derived from the
 //! PumpSwap IDL.  If the program is upgraded and the ordering changes, update
 //! the `account_metas` vectors in [`build_buy`] and [`build_sell`].
+//!
+//! After the IDL accounts both builders append the remaining accounts the
+//! program reads by position: the `pool-v2` PDA when the pool has a coin
+//! creator, then a buyback fee recipient and its quote-mint token account.
+//! Cashback-coin pools also need the user's volume-accumulator accounts first;
+//! [`Pool`] does not carry `is_cashback_coin` yet, so those are not added.
 
 use borsh::BorshSerialize;
 use solana_pubkey::Pubkey;
@@ -172,7 +178,7 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
     );
 
     // Account ordering matches the PumpSwap IDL buy instruction (23 accounts).
-    let accounts = vec![
+    let mut accounts = vec![
         AccountMeta::new(params.pool, false),                   // 0  pool
         AccountMeta::new(params.user, true),                    // 1  user (signer)
         AccountMeta::new_readonly(GLOBAL_CONFIG, false),        // 2  global_config
@@ -197,6 +203,11 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
         AccountMeta::new_readonly(fee_config, false),           // 21 fee_config
         AccountMeta::new_readonly(FEE_PROGRAM, false),          // 22 fee_program
     ];
+    accounts.extend(trade_remaining_accounts(
+        &params.pool_data,
+        params.fee_recipient_index,
+        &params.quote_token_program,
+    )?);
 
     Ok(Instruction {
         program_id: PUMP_AMM_PROGRAM_ID,
@@ -247,7 +258,7 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
     );
 
     // Sell: 21 accounts (no global/user volume accumulators unlike buy's 23)
-    let accounts = vec![
+    let mut accounts = vec![
         AccountMeta::new(params.pool, false),                   // 0  pool
         AccountMeta::new(params.user, true),                    // 1  user (signer)
         AccountMeta::new_readonly(GLOBAL_CONFIG, false),        // 2  global_config
@@ -270,6 +281,11 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
         AccountMeta::new_readonly(fee_config, false),           // 19 fee_config
         AccountMeta::new_readonly(FEE_PROGRAM, false),          // 20 fee_program
     ];
+    accounts.extend(trade_remaining_accounts(
+        &params.pool_data,
+        params.fee_recipient_index,
+        &params.quote_token_program,
+    )?);
 
     Ok(Instruction {
         program_id: PUMP_AMM_PROGRAM_ID,
@@ -471,6 +487,65 @@ pub fn try_parse_swap(
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Remaining accounts of `buy` and `sell`, in the order the program reads them
+/// (pump-swap-sdk `buyInstructionsNoPool` / `sellInstructionsNoPool`): the
+/// `pool-v2` PDA when the pool has a coin creator (else `InvalidPoolV2`, 6062),
+/// then a buyback fee recipient and its quote-mint token account, writable
+/// (else `BuybackFeeRecipientMissing`, 6058).
+fn trade_remaining_accounts(
+    pool_data: &Pool,
+    fee_recipient_index: usize,
+    quote_token_program: &Pubkey,
+) -> SwapResult<Vec<AccountMeta>> {
+    let mut accounts = Vec::with_capacity(3);
+    if pool_data.coin_creator != Pubkey::default() {
+        accounts.push(AccountMeta::new_readonly(
+            derive_pool_v2(&pool_data.base_mint).0,
+            false,
+        ));
+    }
+    accounts.push(AccountMeta::new_readonly(
+        buyback_fee_recipient(fee_recipient_index)?,
+        false,
+    ));
+    accounts.push(AccountMeta::new(
+        buyback_fee_recipient_token_account(
+            fee_recipient_index,
+            &pool_data.quote_mint,
+            quote_token_program,
+        )?,
+        false,
+    ));
+    Ok(accounts)
+}
+
+/// The `pool-v2` PDA of a base mint: seeds `["pool-v2", base_mint]`.
+pub fn derive_pool_v2(base_mint: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[POOL_V2_SEED, base_mint.as_ref()], &PUMP_AMM_PROGRAM_ID)
+}
+
+/// Token account for `quote_mint` of the buyback fee recipient that a trade
+/// built with `fee_recipient_index` pays: the recipient's ATA under the quote
+/// mint's token program.
+pub fn buyback_fee_recipient_token_account(
+    fee_recipient_index: usize,
+    quote_mint: &Pubkey,
+    quote_token_program: &Pubkey,
+) -> SwapResult<Pubkey> {
+    Ok(get_associated_token_address_with_program(
+        &buyback_fee_recipient(fee_recipient_index)?,
+        quote_mint,
+        quote_token_program,
+    ))
+}
+
+fn buyback_fee_recipient(index: usize) -> SwapResult<Pubkey> {
+    BUYBACK_FEE_RECIPIENTS
+        .get(index)
+        .copied()
+        .ok_or(SwapError::MathOverflow) // same out-of-range error as fee_recipient
+}
+
 fn fee_recipient(index: usize) -> SwapResult<Pubkey> {
     PROTOCOL_FEE_RECIPIENTS
         .get(index)
@@ -493,4 +568,86 @@ fn get_associated_token_address_with_program(wallet: &Pubkey, mint: &Pubkey, tok
         ],
         &ASSOCIATED_TOKEN_PROGRAM,
     ).0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pool(coin_creator: Pubkey) -> Pool {
+        Pool {
+            pool_bump: 255,
+            index: 0,
+            creator: Pubkey::new_unique(),
+            base_mint: WSOL_MINT,
+            quote_mint: Pubkey::new_unique(),
+            lp_mint: Pubkey::new_unique(),
+            pool_base_token_account: Pubkey::new_unique(),
+            pool_quote_token_account: Pubkey::new_unique(),
+            lp_supply: 0,
+            is_mayhem_mode: false,
+            coin_creator,
+        }
+    }
+
+    fn build(pool_data: &Pool) -> (Instruction, Instruction) {
+        let pool = Pubkey::new_unique();
+        let user = Pubkey::new_unique();
+        let buy = build_buy(BuyParams {
+            pool,
+            pool_data: pool_data.clone(),
+            user,
+            base_amount_out: 1,
+            max_quote_amount_in: 1,
+            fee_recipient_index: 2,
+            quote_token_program: TOKEN_2022_PROGRAM,
+        })
+        .unwrap();
+        let sell = build_sell(SellParams {
+            pool,
+            pool_data: pool_data.clone(),
+            user,
+            base_amount_in: 1,
+            min_quote_amount_out: 0,
+            fee_recipient_index: 2,
+            quote_token_program: TOKEN_2022_PROGRAM,
+        })
+        .unwrap();
+        (buy, sell)
+    }
+
+    fn keys(ix: &Instruction) -> Vec<Pubkey> {
+        ix.accounts.iter().map(|m| m.pubkey).collect()
+    }
+
+    #[test]
+    fn buyback_pair_follows_the_idl_accounts() {
+        let pool_data = pool(Pubkey::default());
+        let (buy, sell) = build(&pool_data);
+        let expected = [
+            BUYBACK_FEE_RECIPIENTS[2],
+            get_associated_token_address_with_program(
+                &BUYBACK_FEE_RECIPIENTS[2],
+                &pool_data.quote_mint,
+                &TOKEN_2022_PROGRAM,
+            ),
+        ];
+        assert_eq!(&keys(&buy)[23..], &expected);
+        assert_eq!(&keys(&sell)[21..], &expected);
+        for ix in [&buy, &sell] {
+            let n = ix.accounts.len();
+            assert!(!ix.accounts[n - 2].is_writable && ix.accounts[n - 1].is_writable);
+        }
+    }
+
+    #[test]
+    fn pool_v2_comes_first_when_the_pool_has_a_coin_creator() {
+        let pool_data = pool(Pubkey::new_unique());
+        let (buy, sell) = build(&pool_data);
+        let pool_v2 = derive_pool_v2(&pool_data.base_mint).0;
+        assert_eq!(buy.accounts.len(), 26);
+        assert_eq!(sell.accounts.len(), 24);
+        assert_eq!(keys(&buy)[23], pool_v2);
+        assert_eq!(keys(&sell)[21], pool_v2);
+    }
 }
