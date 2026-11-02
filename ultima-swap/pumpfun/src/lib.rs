@@ -50,6 +50,7 @@
 //!     base_amount_out: 1_000_000,
 //!     max_quote_amount_in: max_quote,
 //!     fee_recipient_index: 0, // rotate across 0–7 for throughput
+//!     quote_token_program: ultima_swap_pumpfun::TOKEN_2022_PROGRAM, // owner of the quote mint
 //! }).expect("build buy");
 //! ```
 
@@ -65,7 +66,8 @@ pub use solana_instruction::Instruction;
 pub use constants::*;
 pub use error::{SwapError, SwapResult};
 pub use instructions::{
-    build_buy, build_sell, create_ata_if_needed, create_base_ata_if_needed,
+    build_buy, build_sell, buyback_fee_recipient_token_account, create_ata_if_needed,
+    derive_pool_v2, create_base_ata_if_needed,
     create_quote_ata_if_needed, try_parse_create_pool, try_parse_swap,
     BuyParams, CreatePoolDetected, SellParams, SwapDetected, SwapDirection,
 };

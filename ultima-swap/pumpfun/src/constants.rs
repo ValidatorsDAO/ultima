@@ -41,6 +41,22 @@ pub const PROTOCOL_FEE_RECIPIENTS: [Pubkey; 8] = [
     solana_pubkey::pubkey!("JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU"),
 ];
 
+/// Buyback fee recipients (`GlobalConfig::buyback_fee_recipients` on mainnet).
+///
+/// Every `buy` and `sell` must name one of them, with its token account for the
+/// pool's quote mint, as the last two remaining accounts; without them the
+/// program fails with `BuybackFeeRecipientMissing` (6058). Any of the 8 works.
+pub const BUYBACK_FEE_RECIPIENTS: [Pubkey; 8] = [
+    solana_pubkey::pubkey!("5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD"),
+    solana_pubkey::pubkey!("9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7"),
+    solana_pubkey::pubkey!("GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL"),
+    solana_pubkey::pubkey!("3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR"),
+    solana_pubkey::pubkey!("5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6"),
+    solana_pubkey::pubkey!("EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL"),
+    solana_pubkey::pubkey!("5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD"),
+    solana_pubkey::pubkey!("A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW"),
+];
+
 /// Fee program
 pub const FEE_PROGRAM: Pubkey =
     solana_pubkey::pubkey!("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
@@ -62,3 +78,4 @@ pub const POOL_SEED: &[u8] = b"pool";
 pub const POOL_LP_MINT_SEED: &[u8] = b"pool_lp_mint";
 pub const GLOBAL_CONFIG_SEED: &[u8] = b"global_config";
 pub const EVENT_AUTHORITY_SEED: &[u8] = b"__event_authority";
+pub const POOL_V2_SEED: &[u8] = b"pool-v2";
