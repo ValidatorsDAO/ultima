@@ -21,7 +21,7 @@ graduated from the bonding curve.  This crate lets you:
 | `GlobalConfig` account layout | ⚠️ Inferred — verify discriminator + field ordering against live IDL |
 | `buy` / `sell` instruction builders | ✅ Account ordering matches IDL |
 | Constant-product AMM math | ✅ Tested |
-| Token-2022 base mints | ⚠️ Account list passes `token_2022_program` but ATA creation uses `token_program`; caller must pass the correct program for Token-2022 mints |
+| Token-2022 mints | ✅ Caller passes `base_token_program` and `quote_token_program`; every ATA is derived with its mint's program |
 | `create_pool` building | ❌ Not implemented — handled server-side by Pump.fun migration service |
 | LP deposit / withdraw | ❌ Not yet implemented |
 
@@ -42,7 +42,8 @@ use ultima_swap_pumpfun::{
 // 1. Fetch pool account bytes from RPC and deserialize.
 let pool_data = Pool::try_from_slice(&account_data)?;
 
-// 2. Fetch token vault balances (base and quote reserves).
+// 2. Fetch token vault balances (base and quote reserves). For a pump.fun
+//    graduation the base is the token and the quote is WSOL.
 let quote_needed = quote_in_for_exact_base_out(
     base_reserves,
     quote_reserves,
@@ -61,6 +62,8 @@ let ix = build_buy(BuyParams {
     base_amount_out: 1_000_000,
     max_quote_amount_in: max_quote,
     fee_recipient_index: 0, // rotate 0–7 across transactions for throughput
+    base_token_program,     // owner of the base mint (Token-2022 for most graduations)
+    quote_token_program,    // owner of the quote mint (Token for WSOL)
 })?;
 ```
 
@@ -95,8 +98,6 @@ in the singleton `GlobalConfig` account at
 
 - [ ] Confirm `GlobalConfig` Borsh discriminator and field ordering against
       the deployed IDL (`src/accounts.rs` line ~100).
-- [ ] Support Token-2022 base mints: `create_base_ata_if_needed` needs to pass
-      `token_2022_program` when the mint is a Token-2022 mint.
 - [ ] Fee-recipient rotation strategy (currently caller-controlled via index).
 - [ ] LP deposit / withdraw instruction builders.
 - [ ] Integration tests that hit a localnet/devnet fork.

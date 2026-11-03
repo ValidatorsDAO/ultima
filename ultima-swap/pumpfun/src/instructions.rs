@@ -87,9 +87,18 @@ pub struct BuyParams {
     /// Which protocol-fee recipient to use (index 0–7 into
     /// [`PROTOCOL_FEE_RECIPIENTS`]).  Callers can rotate this for throughput.
     pub fee_recipient_index: usize,
-    /// Token program that owns the graduated (quote) mint.
+    /// Token program that owns the pool's base mint.
     /// Determine at runtime via `getAccountInfo` on the mint.
-    /// Use [`TOKEN_PROGRAM`] for legacy SPL tokens, [`TOKEN_2022_PROGRAM`] for Token Extensions.
+    /// Use [`TOKEN_PROGRAM`] for legacy SPL tokens (and WSOL),
+    /// [`TOKEN_2022_PROGRAM`] for Token Extensions.
+    ///
+    /// For pump.fun graduations the base is the token, usually Token-2022;
+    /// for pools with WSOL as the base it is [`TOKEN_PROGRAM`].
+    pub base_token_program: Pubkey,
+    /// Token program that owns the pool's quote mint.
+    ///
+    /// For pump.fun graduations the quote is WSOL, so [`TOKEN_PROGRAM`];
+    /// for pools with WSOL as the base it is the token's program.
     pub quote_token_program: Pubkey,
 }
 
@@ -108,7 +117,11 @@ pub struct SellParams {
     pub min_quote_amount_out: u64,
     /// Protocol-fee recipient index (0–7).
     pub fee_recipient_index: usize,
-    /// Token program that owns the graduated (quote) mint.
+    /// Token program that owns the pool's base mint (see
+    /// [`BuyParams::base_token_program`]).
+    pub base_token_program: Pubkey,
+    /// Token program that owns the pool's quote mint (see
+    /// [`BuyParams::quote_token_program`]).
     pub quote_token_program: Pubkey,
 }
 
@@ -118,14 +131,16 @@ pub struct SellParams {
 
 /// Build a PumpSwap `buy` [`Instruction`].
 ///
-/// The instruction pays `max_quote_amount_in` lamports from `user` and
-/// transfers `base_amount_out` base-token atoms to the user's ATA.
+/// The instruction spends at most `max_quote_amount_in` quote atoms from the
+/// user's quote ATA and transfers `base_amount_out` base-token atoms to the
+/// user's base ATA.
 ///
 /// # Prerequisite ATAs
 ///
-/// The user must already have (or create in the same transaction):
-/// - A WSOL ATA with enough lamports.
-/// - A base-mint ATA (create with [`create_base_ata_if_needed`] if necessary).
+/// The user must already have (or create in the same transaction, with
+/// [`create_ata_if_needed`] and the mint's token program):
+/// - A quote-mint ATA holding enough quote (for WSOL, wrapped lamports).
+/// - A base-mint ATA.
 ///
 /// # Errors
 ///
@@ -145,10 +160,10 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
     data.serialize(&mut ix_data)
         .map_err(|e| SwapError::Deserialization(e.into()))?;
 
-    // PumpSwap naming: base_mint = WSOL (always TOKEN_PROGRAM),
-    // quote_mint = graduated token (TOKEN_PROGRAM or TOKEN_2022 depending on mint).
+    // Base-mint accounts use the base program; every quote-mint account (the
+    // user's, the fee recipient's, the creator vault's) uses the quote program.
     let user_base_ata =
-        get_associated_token_address(&params.user, &params.pool_data.base_mint); // WSOL → TOKEN_PROGRAM
+        get_associated_token_address_with_program(&params.user, &params.pool_data.base_mint, &params.base_token_program);
     let user_quote_ata =
         get_associated_token_address_with_program(&params.user, &params.pool_data.quote_mint, &params.quote_token_program);
     let fee_recipient_quote_ata =
@@ -190,7 +205,7 @@ pub fn build_buy(params: BuyParams) -> SwapResult<Instruction> {
         AccountMeta::new(params.pool_data.pool_quote_token_account, false), // 8  pool_quote_token_account
         AccountMeta::new(fee_recipient, false),                 // 9  protocol_fee_recipient
         AccountMeta::new(fee_recipient_quote_ata, false),       // 10 protocol_fee_recipient_token_account
-        AccountMeta::new_readonly(TOKEN_PROGRAM, false),        // 11 base_token_program
+        AccountMeta::new_readonly(params.base_token_program, false), // 11 base_token_program
         AccountMeta::new_readonly(params.quote_token_program, false), // 12 quote_token_program
         AccountMeta::new_readonly(SYSTEM_PROGRAM, false),       // 13 system_program
         AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM, false), // 14 associated_token_program
@@ -233,10 +248,10 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
     data.serialize(&mut ix_data)
         .map_err(|e| SwapError::Deserialization(e.into()))?;
 
-    // PumpSwap naming: base_mint = WSOL (always TOKEN_PROGRAM),
-    // quote_mint = graduated token (runtime-determined token program).
+    // Base-mint accounts use the base program; every quote-mint account uses
+    // the quote program.
     let user_base_ata =
-        get_associated_token_address(&params.user, &params.pool_data.base_mint); // WSOL → TOKEN_PROGRAM
+        get_associated_token_address_with_program(&params.user, &params.pool_data.base_mint, &params.base_token_program);
     let user_quote_ata =
         get_associated_token_address_with_program(&params.user, &params.pool_data.quote_mint, &params.quote_token_program);
     let fee_recipient_quote_ata =
@@ -270,7 +285,7 @@ pub fn build_sell(params: SellParams) -> SwapResult<Instruction> {
         AccountMeta::new(params.pool_data.pool_quote_token_account, false), // 8  pool_quote_token_account
         AccountMeta::new(fee_recipient, false),                 // 9  protocol_fee_recipient
         AccountMeta::new(fee_recipient_quote_ata, false),       // 10 protocol_fee_recipient_token_account
-        AccountMeta::new_readonly(TOKEN_PROGRAM, false),        // 11 base_token_program
+        AccountMeta::new_readonly(params.base_token_program, false), // 11 base_token_program
         AccountMeta::new_readonly(params.quote_token_program, false), // 12 quote_token_program
         AccountMeta::new_readonly(SYSTEM_PROGRAM, false),       // 13 system_program
         AccountMeta::new_readonly(ASSOCIATED_TOKEN_PROGRAM, false), // 14 associated_token_program
@@ -345,65 +360,130 @@ pub fn create_ata_if_needed(user: &Pubkey, mint: &Pubkey, token_program: &Pubkey
 /// This is used for **detection/monitoring** — subscribing to program logs and
 /// extracting newly-created pools — not for building create_pool instructions
 /// (which is handled server-side by Pump.fun's migration service).
-#[derive(Debug, Clone)]
+///
+/// Fields keep PumpSwap's own base/quote naming. For a pump.fun graduation
+/// the base is the token and the quote WSOL; pools made by calling
+/// `create_pool` directly are often the other way round. Use
+/// [`CreatePoolDetected::token_mint`] for the non-WSOL side.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatePoolDetected {
-    /// The newly-created pool address (account key at index 0).
+    /// The newly-created pool address (account 0).
     pub pool: Pubkey,
-    /// The pool creator.
+    /// The signer that created the pool (account 2). For a graduation this is
+    /// pump.fun's migration authority, not the token's deployer: see
+    /// [`CreatePoolDetected::coin_creator`].
     pub creator: Pubkey,
-    /// Base (graduated token) mint.
+    /// The pool's base mint (account 3).
     pub base_mint: Pubkey,
-    /// Quote mint (typically WSOL).
+    /// The pool's quote mint (account 4).
     pub quote_mint: Pubkey,
+    /// The pool's LP mint (account 5).
+    pub lp_mint: Pubkey,
+    /// The pool's base vault (account 9).
+    pub pool_base_token_account: Pubkey,
+    /// The pool's quote vault (account 10).
+    pub pool_quote_token_account: Pubkey,
+    /// Token program of the base mint (account 13).
+    pub base_token_program: Pubkey,
+    /// Token program of the quote mint (account 14).
+    pub quote_token_program: Pubkey,
+    /// `index` argument.
+    pub index: u16,
+    /// `base_amount_in` argument: the pool's opening base reserves.
+    pub base_amount_in: u64,
+    /// `quote_amount_in` argument: the pool's opening quote reserves.
+    pub quote_amount_in: u64,
+    /// `coin_creator` argument: the token's deployer for a graduation.
+    pub coin_creator: Pubkey,
+    /// `is_mayhem_mode` argument.
+    pub is_mayhem_mode: bool,
+}
+
+impl CreatePoolDetected {
+    /// The mint on the other side of WSOL, with its token program, or `None`
+    /// if neither or both sides are WSOL.
+    pub fn token_mint(&self) -> Option<(Pubkey, Pubkey)> {
+        match (self.base_mint == WSOL_MINT, self.quote_mint == WSOL_MINT) {
+            (true, false) => Some((self.quote_mint, self.quote_token_program)),
+            (false, true) => Some((self.base_mint, self.base_token_program)),
+            _ => None,
+        }
+    }
 }
 
 /// Attempt to parse a `create_pool` instruction from raw instruction bytes and
 /// account keys.
 ///
-/// Returns `None` if the discriminator doesn't match or there are too few
-/// accounts.
+/// Returns `None` if the discriminator doesn't match, the arguments are
+/// short, there are too few accounts, or account 1 is not PumpSwap's
+/// [`GLOBAL_CONFIG`].
 ///
 /// # Account ordering for create_pool
 ///
-/// Verified against on-chain create_pool transactions (2026-04-03):
+/// Verified against on-chain create_pool transactions (2026-11-03):
 ///
 /// ```text
 /// 0  pool              (new pool address)
-/// 1  creator           (payer / signer)
-/// 2  global_config
-/// 3  base_mint         (WSOL — PumpSwap calls WSOL "base")
-/// 4  quote_mint        (graduated token — PumpSwap calls this "quote")
+/// 1  global_config
+/// 2  creator           (signer)
+/// 3  base_mint         (the token, for pump.fun graduations)
+/// 4  quote_mint        (WSOL, for pump.fun graduations)
 /// 5  lp_mint
-/// 6  pool_base_vault   (WSOL vault)
-/// 7  pool_quote_vault  (graduated token vault)
-/// ...
+/// 6  user_base_token_account
+/// 7  user_quote_token_account
+/// 8  user_pool_token_account
+/// 9  pool_base_token_account
+/// 10 pool_quote_token_account
+/// 11 system_program
+/// 12 token_2022_program
+/// 13 base_token_program
+/// 14 quote_token_program
+/// 15 associated_token_program
+/// 16 event_authority
+/// 17 program
 /// ```
 ///
-/// **IMPORTANT:** PumpSwap's naming is inverted from the usual convention.
-/// On-chain Pool struct has `base_mint = WSOL` and `quote_mint = graduated`.
-/// The `base_mint` field in [`CreatePoolDetected`] returns the **graduated
-/// token** (index 4) for downstream convenience — the thing we want to trade.
+/// # Arguments (after the 8-byte discriminator)
+///
+/// ```text
+/// index           u16
+/// base_amount_in  u64
+/// quote_amount_in u64
+/// coin_creator    Pubkey
+/// is_mayhem_mode  bool
+/// ...             (a further flag byte, not read)
+/// ```
 pub fn try_parse_create_pool(
     ix_data: &[u8],
     account_keys: &[Pubkey],
 ) -> Option<CreatePoolDetected> {
-    if ix_data.len() < 8 {
+    const ARGS_LEN: usize = 2 + 8 + 8 + 32 + 1;
+    if ix_data.len() < 8 + ARGS_LEN {
         return None;
     }
     let disc: [u8; 8] = ix_data[..8].try_into().ok()?;
     if disc != CREATE_POOL_DISCRIMINATOR {
         return None;
     }
-    if account_keys.len() < 6 {
+    if account_keys.len() < 15 || account_keys[1] != GLOBAL_CONFIG {
         return None;
     }
-    // Return graduated token as "base_mint" for downstream (it's actually
-    // PumpSwap's quote_mint at index 4).
+    let args = &ix_data[8..];
     Some(CreatePoolDetected {
         pool: account_keys[0],
-        creator: account_keys[1],
-        base_mint: account_keys[4],  // graduated token (PumpSwap's quote_mint)
-        quote_mint: account_keys[3], // WSOL (PumpSwap's base_mint)
+        creator: account_keys[2],
+        base_mint: account_keys[3],
+        quote_mint: account_keys[4],
+        lp_mint: account_keys[5],
+        pool_base_token_account: account_keys[9],
+        pool_quote_token_account: account_keys[10],
+        base_token_program: account_keys[13],
+        quote_token_program: account_keys[14],
+        index: u16::from_le_bytes(args[0..2].try_into().ok()?),
+        base_amount_in: u64::from_le_bytes(args[2..10].try_into().ok()?),
+        quote_amount_in: u64::from_le_bytes(args[10..18].try_into().ok()?),
+        coin_creator: Pubkey::new_from_array(args[18..50].try_into().ok()?),
+        is_mayhem_mode: args[50] != 0,
     })
 }
 
@@ -553,12 +633,8 @@ fn fee_recipient(index: usize) -> SwapResult<Pubkey> {
         .ok_or_else(|| SwapError::MathOverflow) // reuse closest error; index OOB
 }
 
-/// Derive the Associated Token Account (ATA) address.
-/// This is the standard ATA derivation: PDA of [wallet, TOKEN_PROGRAM, mint] under the ATA program.
-fn get_associated_token_address(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
-    get_associated_token_address_with_program(wallet, mint, &TOKEN_PROGRAM)
-}
-
+/// Derive the Associated Token Account (ATA) address: PDA of
+/// [wallet, token_program, mint] under the ATA program.
 fn get_associated_token_address_with_program(wallet: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(
         &[
@@ -600,6 +676,7 @@ mod tests {
             base_amount_out: 1,
             max_quote_amount_in: 1,
             fee_recipient_index: 2,
+            base_token_program: TOKEN_PROGRAM,
             quote_token_program: TOKEN_2022_PROGRAM,
         })
         .unwrap();
@@ -610,6 +687,7 @@ mod tests {
             base_amount_in: 1,
             min_quote_amount_out: 0,
             fee_recipient_index: 2,
+            base_token_program: TOKEN_PROGRAM,
             quote_token_program: TOKEN_2022_PROGRAM,
         })
         .unwrap();
@@ -649,5 +727,169 @@ mod tests {
         assert_eq!(sell.accounts.len(), 24);
         assert_eq!(keys(&buy)[23], pool_v2);
         assert_eq!(keys(&sell)[21], pool_v2);
+    }
+
+    fn k(s: &str) -> Pubkey {
+        s.parse().unwrap()
+    }
+
+    /// The `create_pool` pump.fun's migration called in slot 464874772, for
+    /// pool F6KbJYYx...: index 0, 206.9M tokens and 84.99 SOL in.
+    fn graduation_create_pool() -> (Vec<u8>, Vec<Pubkey>) {
+        let mut data = CREATE_POOL_DISCRIMINATOR.to_vec();
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&206_900_000_000_000u64.to_le_bytes());
+        data.extend_from_slice(&84_990_359_056u64.to_le_bytes());
+        data.extend_from_slice(k("C8oBfdKGaaNeNVqzmL2awkrTWxdjGd6Ho7qssqSCS1Yx").as_ref());
+        data.extend_from_slice(&[0; 2]);
+        let accounts = [
+            "F6KbJYYxzdT27XZD3mznj9PCqUG5kojHQFZzQFE13rPp",
+            "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw",
+            "3rmiDHgHJJjusvK7SoZrg1kFmuRY8eZtKAtnRessqYx5",
+            "8V16miNE7UHGUGD4cWP9MX8SNSJK1fhaxqTasHCJpump",
+            "So11111111111111111111111111111111111111112",
+            "GxXDTiGZjqTw7xK4jJfQFiTBXkeyvFQ3jpp83PLBmVAi",
+            "RvKZ3wSvFgvDBv97cGPgkVhyFPJeDrpBhyKtzdESx5y",
+            "Deu985QqBpfUuSjwMoV2cHRgwdrDHDyegsajBVYwruk",
+            "2B8awmPxSALJGRBWiU4T1tPWWkZY6GgdH8qX8ATayr34",
+            "EmZZ5bNaJ9qLG5MoneCuG1b5kEaj15dXscTRRLpWibC",
+            "4pAzP13YwoV4zNZEyHfa8GwGphVJPjcdxzCnLgXCphVV",
+            "11111111111111111111111111111111",
+            "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+            "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR",
+            "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+        ]
+        .iter()
+        .map(|s| k(s))
+        .collect();
+        (data, accounts)
+    }
+
+    #[test]
+    fn a_graduation_create_pool_is_read_with_the_token_as_base() {
+        let (data, accounts) = graduation_create_pool();
+        let p = try_parse_create_pool(&data, &accounts).unwrap();
+        assert_eq!(p.pool, accounts[0]);
+        // Account 1 is the global config, not the creator.
+        assert_eq!(p.creator, k("3rmiDHgHJJjusvK7SoZrg1kFmuRY8eZtKAtnRessqYx5"));
+        assert_eq!(p.base_mint, k("8V16miNE7UHGUGD4cWP9MX8SNSJK1fhaxqTasHCJpump"));
+        assert_eq!(p.quote_mint, WSOL_MINT);
+        assert_eq!(p.lp_mint, accounts[5]);
+        assert_eq!(p.pool_base_token_account, accounts[9]);
+        assert_eq!(p.pool_quote_token_account, accounts[10]);
+        assert_eq!(p.base_token_program, TOKEN_2022_PROGRAM);
+        assert_eq!(p.quote_token_program, TOKEN_PROGRAM);
+        assert_eq!(p.index, 0);
+        assert_eq!(p.base_amount_in, 206_900_000_000_000);
+        assert_eq!(p.quote_amount_in, 84_990_359_056);
+        assert_eq!(p.coin_creator, k("C8oBfdKGaaNeNVqzmL2awkrTWxdjGd6Ho7qssqSCS1Yx"));
+        assert!(!p.is_mayhem_mode);
+        assert_eq!(p.token_mint(), Some((p.base_mint, TOKEN_2022_PROGRAM)));
+    }
+
+    #[test]
+    fn create_pool_is_rejected_without_its_args_or_the_global_config() {
+        let (data, accounts) = graduation_create_pool();
+        assert!(try_parse_create_pool(&data[..8 + 50], &accounts).is_none());
+        assert!(try_parse_create_pool(&data, &accounts[..14]).is_none());
+        let mut wrong = accounts.clone();
+        wrong[1] = Pubkey::new_unique();
+        assert!(try_parse_create_pool(&data, &wrong).is_none());
+    }
+
+    #[test]
+    fn a_wsol_base_create_pool_finds_the_token_on_the_quote_side() {
+        let (data, mut accounts) = graduation_create_pool();
+        accounts.swap(3, 4);
+        accounts.swap(13, 14);
+        let p = try_parse_create_pool(&data, &accounts).unwrap();
+        assert_eq!(p.base_mint, WSOL_MINT);
+        assert_eq!(p.token_mint(), Some((accounts[4], TOKEN_2022_PROGRAM)));
+    }
+
+    /// Buy and sell on the graduated pool F6KbJYYx..., a Token-2022 token with
+    /// a coin creator, as simulated on mainnet.
+    #[test]
+    fn a_graduation_trades_its_token_2022_base_and_wsol_quote() {
+        let (data, accounts) = graduation_create_pool();
+        let p = try_parse_create_pool(&data, &accounts).unwrap();
+        let pool_data = Pool {
+            pool_bump: 255,
+            index: p.index,
+            creator: p.creator,
+            base_mint: p.base_mint,
+            quote_mint: p.quote_mint,
+            lp_mint: p.lp_mint,
+            pool_base_token_account: p.pool_base_token_account,
+            pool_quote_token_account: p.pool_quote_token_account,
+            lp_supply: 0,
+            coin_creator: p.coin_creator,
+            is_mayhem_mode: false,
+        };
+        let user = Pubkey::new_unique();
+        let buy = build_buy(BuyParams {
+            pool: p.pool,
+            pool_data: pool_data.clone(),
+            user,
+            base_amount_out: 10,
+            max_quote_amount_in: 1_000,
+            fee_recipient_index: 0,
+            base_token_program: TOKEN_2022_PROGRAM,
+            quote_token_program: TOKEN_PROGRAM,
+        })
+        .unwrap();
+        let sell = build_sell(SellParams {
+            pool: p.pool,
+            pool_data: pool_data.clone(),
+            user,
+            base_amount_in: 10,
+            min_quote_amount_out: 1,
+            fee_recipient_index: 0,
+            base_token_program: TOKEN_2022_PROGRAM,
+            quote_token_program: TOKEN_PROGRAM,
+        })
+        .unwrap();
+        let wsol_ata = |owner: &Pubkey| get_associated_token_address_with_program(owner, &WSOL_MINT, &TOKEN_PROGRAM);
+        let creator_vault = Pubkey::find_program_address(
+            &[b"creator_vault", p.coin_creator.as_ref()],
+            &PUMP_AMM_PROGRAM_ID,
+        )
+        .0;
+        assert_eq!(buy.accounts.len(), 26);
+        assert_eq!(sell.accounts.len(), 24);
+        for ix in [&buy, &sell] {
+            let keys = keys(ix);
+            let n = keys.len();
+            assert_eq!(
+                keys[5],
+                get_associated_token_address_with_program(&user, &p.base_mint, &TOKEN_2022_PROGRAM)
+            );
+            assert_eq!(keys[6], wsol_ata(&user));
+            assert_eq!(keys[10], wsol_ata(&PROTOCOL_FEE_RECIPIENTS[0]));
+            assert_eq!(keys[11], TOKEN_2022_PROGRAM);
+            assert_eq!(keys[12], TOKEN_PROGRAM);
+            assert_eq!(keys[17], wsol_ata(&creator_vault));
+            assert_eq!(keys[18], creator_vault);
+            assert_eq!(keys[n - 3], derive_pool_v2(&p.base_mint).0);
+            assert_eq!(keys[n - 2], BUYBACK_FEE_RECIPIENTS[0]);
+            assert_eq!(keys[n - 1], wsol_ata(&BUYBACK_FEE_RECIPIENTS[0]));
+        }
+    }
+
+    #[test]
+    fn a_wsol_base_pool_keeps_its_accounts_on_token_program() {
+        let pool_data = pool(Pubkey::default());
+        let (buy, sell) = build(&pool_data);
+        for ix in [&buy, &sell] {
+            assert_eq!(
+                ix.accounts[5].pubkey,
+                get_associated_token_address_with_program(&ix.accounts[1].pubkey, &WSOL_MINT, &TOKEN_PROGRAM)
+            );
+            assert_eq!(ix.accounts[11].pubkey, TOKEN_PROGRAM);
+            assert_eq!(ix.accounts[12].pubkey, TOKEN_2022_PROGRAM);
+        }
     }
 }
