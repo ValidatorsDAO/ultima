@@ -29,9 +29,10 @@
 //! let pool_data: Pool = todo!();
 //! let user: Pubkey = todo!();
 //!
+//! // A pump.fun graduation: the token is the base, WSOL the quote.
 //! // How much SOL is needed to buy 1_000_000 base atoms?
-//! let base_reserves: u64 = todo!(); // from token vault balance
-//! let quote_reserves: u64 = todo!(); // from SOL vault balance
+//! let base_reserves: u64 = todo!(); // from the token vault balance
+//! let quote_reserves: u64 = todo!(); // from the WSOL vault balance
 //!
 //! let quote_needed = quote_in_for_exact_base_out(
 //!     base_reserves,
@@ -50,7 +51,8 @@
 //!     base_amount_out: 1_000_000,
 //!     max_quote_amount_in: max_quote,
 //!     fee_recipient_index: 0, // rotate across 0–7 for throughput
-//!     quote_token_program: ultima_swap_pumpfun::TOKEN_2022_PROGRAM, // owner of the quote mint
+//!     base_token_program: ultima_swap_pumpfun::TOKEN_2022_PROGRAM, // owner of the base mint (the token)
+//!     quote_token_program: ultima_swap_pumpfun::TOKEN_PROGRAM, // owner of the quote mint (WSOL)
 //! }).expect("build buy");
 //! ```
 
